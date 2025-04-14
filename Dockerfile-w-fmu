@@ -1,0 +1,167 @@
+# Keep ARG outside of build images so can access globally
+# This is not ideal. The tarballs are not named nicely and EnergyPlus versioning is strange
+ARG ENERGYPLUS_VERSION
+ARG ENERGYPLUS_SHA
+ARG ENERGYPLUS_INSTALL_VERSION
+ARG ENERGYPLUS_TAG
+ARG UBUNTU_BASE=24.04
+ARG ENERGYPLUSTOFMU_VERSION=3.1.0
+ARG ARCHITECTURE=arm64
+
+FROM ubuntu:$UBUNTU_BASE AS base
+
+LABEL org.opencontainers.image.authors="Nicholas Long <Nicholas.Long@nrel.gov>"
+
+ARG ENERGYPLUS_VERSION
+ARG ENERGYPLUS_SHA
+ARG ENERGYPLUS_INSTALL_VERSION
+ARG ENERGYPLUS_TAG
+ARG UBUNTU_BASE
+ARG ENERGYPLUSTOFMU_VERSION
+ARG ARCHITECTURE
+
+ENV ENERGYPLUS_VERSION=$ENERGYPLUS_VERSION
+ENV ENERGYPLUS_TAG=$ENERGYPLUS_TAG
+ENV ENERGYPLUS_SHA=$ENERGYPLUS_SHA
+ENV UBUNTU_BASE=$UBUNTU_BASE
+ENV ENERGYPLUSTOFMU_VERSION=$ENERGYPLUSTOFMU_VERSION
+ENV ARCHITECTURE=$ARCHITECTURE
+
+# This should be x.y.z, but EnergyPlus convention is x-y-z
+ENV ENERGYPLUS_INSTALL_VERSION=$ENERGYPLUS_INSTALL_VERSION
+
+# Downloading from GitHub
+# e.g. https://github.com/NREL/EnergyPlus/releases/download/v22.1.0/EnergyPlus-22.1.0-ed759b17ee-Linux-Ubuntu20.04-x86_64.tar.gz
+ENV ENERGYPLUS_DOWNLOAD_BASE_URL https://github.com/NREL/EnergyPlus/releases/download/$ENERGYPLUS_TAG
+# 修改下载URL以包含架构信息
+ENV ENERGYPLUS_DOWNLOAD_BASENAME EnergyPlus-$ENERGYPLUS_VERSION-$ENERGYPLUS_SHA-Linux-Ubuntu$UBUNTU_BASE-$ARCHITECTURE
+ENV ENERGYPLUS_DOWNLOAD_FILENAME $ENERGYPLUS_DOWNLOAD_BASENAME.tar.gz
+ENV ENERGYPLUS_DOWNLOAD_URL $ENERGYPLUS_DOWNLOAD_BASE_URL/$ENERGYPLUS_DOWNLOAD_FILENAME
+
+ENV SIMDATA_DIR=/var/simdata
+
+# 添加 EnergyPlusToFMU 下载 URL
+ENV ENERGYPLUSTOFMU_DOWNLOAD_URL https://github.com/lbl-srg/EnergyPlusToFMU/releases/download/v$ENERGYPLUSTOFMU_VERSION/EnergyPlusToFMU-v$ENERGYPLUSTOFMU_VERSION.zip
+
+# 添加调试信息
+RUN echo "Downloading from: $ENERGYPLUS_DOWNLOAD_URL" && \
+    echo "Download filename: $ENERGYPLUS_DOWNLOAD_FILENAME" && \
+    echo "Download basename: $ENERGYPLUS_DOWNLOAD_BASENAME" && \
+    echo "Architecture: $ARCHITECTURE"
+
+# Download
+RUN apt-get update \
+    && apt-get install -y ca-certificates curl libx11-6 libexpat1 python3 python3-pip wget file $(["$UBUNTU_BASE" = "22.04"] && echo -n "libmd0") \
+    && rm -rf /var/lib/apt/lists/* \
+    && wget -O $ENERGYPLUS_DOWNLOAD_FILENAME $ENERGYPLUS_DOWNLOAD_URL
+
+# 验证下载的文件
+RUN ls -la && file $ENERGYPLUS_DOWNLOAD_FILENAME
+
+# Unzip
+RUN tar -zxvf $ENERGYPLUS_DOWNLOAD_FILENAME \
+    && cd $ENERGYPLUS_DOWNLOAD_BASENAME \
+    && chmod +x energyplus \
+    && ln -s energyplus EnergyPlus
+
+RUN mkdir -p $SIMDATA_DIR/energyplus \
+    && cd $ENERGYPLUS_DOWNLOAD_BASENAME \
+    && cp ExampleFiles/1ZoneUncontrolled.idf $SIMDATA_DIR \
+    && cp ExampleFiles/PythonPluginCustomOutputVariable.idf $SIMDATA_DIR \
+    && cp ExampleFiles/PythonPluginCustomOutputVariable.py $SIMDATA_DIR
+
+# Remove datasets to slim down the EnergyPlus folder
+RUN rm ${ENERGYPLUS_DOWNLOAD_BASENAME}.tar.gz \
+    && cd $ENERGYPLUS_DOWNLOAD_BASENAME \
+    && rm -rf DataSets Documentation ExampleFiles WeatherData MacroDataSets PostProcess/convertESOMTRpgm \
+    PostProcess/EP-Compare PreProcess/FMUParser PreProcess/ParametricPreProcessor PreProcess/IDFVersionUpdater
+
+# Conditional copy depending on UBUNTU_BASE
+FROM ubuntu:18.04 AS build_18.04
+ONBUILD COPY --from=base \
+    /lib/x86_64-linux-gnu/libbsd.so* \
+    /lib/x86_64-linux-gnu/libexpat.so* \
+    /lib/x86_64-linux-gnu/
+
+FROM ubuntu:20.04 AS build_20.04
+ONBUILD COPY --from=base \
+    /usr/lib/x86_64-linux-gnu/libbsd.so* \
+    /usr/lib/x86_64-linux-gnu/libexpat.so* \
+    /usr/lib/x86_64-linux-gnu/
+
+FROM ubuntu:22.04 AS build_22.04
+ONBUILD COPY --from=base \
+    /usr/lib/x86_64-linux-gnu/libbsd.so* \
+    /usr/lib/x86_64-linux-gnu/libexpat.so* \
+    /usr/lib/x86_64-linux-gnu/libmd.so* \
+    /usr/lib/x86_64-linux-gnu/
+
+# 添加 Ubuntu 24.04 的中间镜像定义
+FROM ubuntu:24.04 AS build_24.04
+ONBUILD COPY --from=base \
+    /usr/lib/aarch64-linux-gnu/libbsd.so* \
+    /usr/lib/aarch64-linux-gnu/libexpat.so* \
+    /usr/lib/aarch64-linux-gnu/libmd.so* \
+    /usr/lib/aarch64-linux-gnu/
+
+# Use Multi-stage build to produce a smaller final image
+FROM ubuntu:${UBUNTU_BASE} AS runtime
+
+ARG ENERGYPLUS_VERSION
+ARG ENERGYPLUS_SHA
+ARG UBUNTU_BASE
+ARG ARCHITECTURE
+ARG ENERGYPLUSTOFMU_VERSION
+
+ENV ENERGYPLUS_VERSION=$ENERGYPLUS_VERSION
+ENV ENERGYPLUS_SHA=$ENERGYPLUS_SHA
+ENV ARCHITECTURE=$ARCHITECTURE
+ENV ENERGYPLUS_DOWNLOAD_BASENAME EnergyPlus-$ENERGYPLUS_VERSION-$ENERGYPLUS_SHA-Linux-Ubuntu$UBUNTU_BASE-$ARCHITECTURE
+ENV SIMDATA_DIR=/var/simdata
+ENV ENERGYPLUSTOFMU_VERSION=$ENERGYPLUSTOFMU_VERSION
+ENV ENERGYPLUSTOFMU_DOWNLOAD_URL=https://github.com/lbl-srg/EnergyPlusToFMU/releases/download/v$ENERGYPLUSTOFMU_VERSION/EnergyPlusToFMU-v$ENERGYPLUSTOFMU_VERSION.zip
+
+# 安装必要的库和工具
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libx11-6 \
+    libexpat1 \
+    python3 \
+    python3-pip \
+    ca-certificates \
+    curl \
+    wget \
+    unzip \
+    build-essential \ 
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# 先复制 EnergyPlus 目录和数据
+COPY --from=base $ENERGYPLUS_DOWNLOAD_BASENAME $ENERGYPLUS_DOWNLOAD_BASENAME
+COPY --from=base $SIMDATA_DIR $SIMDATA_DIR
+
+# 然后再保留 EnergyPlus 的 IDD 文件 - 修复复制问题
+RUN cd $ENERGYPLUS_DOWNLOAD_BASENAME \
+    && mkdir -p PreProcess \
+    && echo "IDD文件已存在，无需复制"
+
+# Add energyplus to PATH so can run "energyplus" in any directory
+ENV PATH="/${ENERGYPLUS_DOWNLOAD_BASENAME}:${PATH}"
+
+# 下载并安装 EnergyPlusToFMU（添加错误检查和调试信息）
+RUN echo "Downloading EnergyPlusToFMU from: $ENERGYPLUSTOFMU_DOWNLOAD_URL" && \
+    mkdir -p /usr/local/EnergyPlusToFMU && \
+    wget --verbose -O /tmp/EnergyPlusToFMU.zip $ENERGYPLUSTOFMU_DOWNLOAD_URL && \
+    ls -la /tmp/EnergyPlusToFMU.zip && \
+    unzip -o /tmp/EnergyPlusToFMU.zip -d /usr/local/EnergyPlusToFMU && \
+    rm /tmp/EnergyPlusToFMU.zip && \
+    ls -la /usr/local/EnergyPlusToFMU && \
+    # 修复 time-help.cpp 中的缓冲区溢出问题
+    sed -i 's/snprintf(currTimeUTC, 21,/snprintf(currTimeUTC, 30,/' /usr/local/EnergyPlusToFMU/SourceCode/utility/time-help.cpp && \
+    sed -i 's/char currTimeUTC\[21\]/char currTimeUTC[30]/' /usr/local/EnergyPlusToFMU/SourceCode/utility/time-help.cpp && \
+    find /usr/local/EnergyPlusToFMU -name "EnergyPlusToFMU.py" -type f -exec chmod +x {} \;
+
+# 添加 EnergyPlusToFMU 到 PATH（修正路径）
+ENV PATH="/usr/local/EnergyPlusToFMU/Scripts:${PATH}"
+
+CMD [ "/bin/bash" ]

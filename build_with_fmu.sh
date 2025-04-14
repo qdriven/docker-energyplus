@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# 设置变量
+ENERGYPLUS_VERSION="25.1.0"
+ENERGYPLUS_SHA="68a4a7c774"  # 更新为新版本的SHA
+ENERGYPLUS_INSTALL_VERSION="25-1-0"
+ENERGYPLUS_TAG="v25.1.0"
+UBUNTU_BASE="24.04"
+ENERGYPLUSTOFMU_VERSION="3.1.0"
+ARCHITECTURE="arm64"  # 新增架构参数
+
+# 构建Docker镜像
+docker build -t energyplus-with-fmu \
+  --build-arg ENERGYPLUS_VERSION=$ENERGYPLUS_VERSION \
+  --build-arg ENERGYPLUS_SHA=$ENERGYPLUS_SHA \
+  --build-arg ENERGYPLUS_INSTALL_VERSION=$ENERGYPLUS_INSTALL_VERSION \
+  --build-arg ENERGYPLUS_TAG=$ENERGYPLUS_TAG \
+  --build-arg UBUNTU_BASE=$UBUNTU_BASE \
+  --build-arg ENERGYPLUSTOFMU_VERSION=$ENERGYPLUSTOFMU_VERSION \
+  --build-arg ARCHITECTURE=$ARCHITECTURE \
+  .
+
+echo "Complete Building：energyplus-with-fmu"
